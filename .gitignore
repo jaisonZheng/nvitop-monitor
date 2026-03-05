@@ -47,3 +47,6 @@ Thumbs.db
 
 # Logs
 *.log
+
+# nvitop source code (not needed in repo)
+nvitop/
