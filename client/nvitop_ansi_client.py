@@ -9,7 +9,6 @@ Strategy:
 
 Sends to POST /update_ansi on the server.
 """
-from __future__ import annotations
 
 import os
 import sys
@@ -56,7 +55,7 @@ def find_nvitop() -> str:
     raise FileNotFoundError("nvitop not found. Tried: " + ", ".join(NVITOP_PATHS))
 
 
-def _ansi_env(cols: int = 200, rows: int = 50) -> dict:
+def _ansi_env() -> dict:
     """Environment vars that force nvitop to emit 256-color ANSI codes."""
     env = os.environ.copy()
     env.update({
@@ -64,25 +63,29 @@ def _ansi_env(cols: int = 200, rows: int = 50) -> dict:
         "FORCE_COLOR": "1",
         "CLICOLOR_FORCE": "1",
         "COLORTERM": "truecolor",
-        "COLUMNS": str(cols),
-        "LINES": str(rows),
+        "COLUMNS": "200",   # give nvitop plenty of width for bar charts
+        "LINES": "50",
     })
     return env
 
 
-def capture_one_shot(nvitop: str, cols: int = 200, rows: int = 50) -> str:
+def capture_one_shot(nvitop: str) -> str:
     """
     Run `nvitop -1 --colorful` inside a pty so it thinks it's attached to a
     real terminal (required for ANSI color output).  Returns the raw ANSI text.
-    cols/rows set the pty window size so nvitop lays out bars to match the browser.
     """
+    # We need a pty because nvitop checks isatty(stdout) to decide whether
+    # to emit color codes.  subprocess.run(capture_output=True) makes stdout
+    # a pipe → nvitop sees isatty()=False → no colors.
     master_fd, slave_fd = pty.openpty()
 
     # Set the pty window size so nvitop lays out bars properly
-    ws = struct.pack("HHHH", rows, cols, 0, 0)
+    ws = struct.pack("HHHH", 50, 200, 0, 0)
     fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, ws)
 
-    env = _ansi_env(cols, rows)
+    env = _ansi_env()
+    env["COLUMNS"] = "200"
+    env["LINES"] = "50"
 
     try:
         proc = subprocess.Popen(
@@ -199,18 +202,6 @@ def clean_pty_output(raw: str) -> str:
     return cleaned
 
 
-def fetch_dimensions() -> tuple[int, int]:
-    """Ask the server what terminal size the browser wants (cols, rows)."""
-    try:
-        resp = requests.get(f"{SERVER_URL}/dimensions", timeout=3)
-        if resp.status_code == 200:
-            d = resp.json()
-            return int(d.get("cols", 200)), int(d.get("rows", 50))
-    except Exception:
-        pass
-    return 200, 50
-
-
 def send_ansi(ansi_text: str, hostname: str, username: str) -> bool:
     """POST the cleaned ANSI text to the server."""
     data = {
@@ -251,17 +242,17 @@ def main():
     while True:
         t0 = time.time()
         try:
-            cols, rows = fetch_dimensions()
-            raw = capture_one_shot(nvitop, cols, rows)
+            raw = capture_one_shot(nvitop)
             if not raw.strip():
                 print(f"[{datetime.now().strftime('%H:%M:%S')}] nvitop returned empty output", flush=True)
             else:
                 ansi = clean_pty_output(raw)
                 print(
                     f"[{datetime.now().strftime('%H:%M:%S')}] "
-                    f"captured {len(raw)} bytes → {len(ansi)} cleaned  [{cols}×{rows}]",
+                    f"captured {len(raw)} bytes → {len(ansi)} cleaned",
                     flush=True,
                 )
+                # Quick sanity check: should contain NVITOP header
                 has_header = 'NVITOP' in ansi or 'nvitop' in ansi.lower()
                 has_colors = '\x1b[' in ansi
                 print(
