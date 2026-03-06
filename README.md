@@ -1,4 +1,4 @@
-# hpc-gpu-monitor
+# hpc-gpu-monitor (Vibe Coding)
 
 > View your HPC's `nvitop` in any browser — pixel-perfect colors, live updates every second.
 
