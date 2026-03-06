@@ -27,6 +27,10 @@ state = {
     "timestamp": "",
     "hostname": "",
     "username": "",
+    # Dimensions requested by the browser (cols × rows).
+    # The client reads these and passes them to nvitop via pty/COLUMNS/LINES.
+    "cols": 200,
+    "rows": 50,
 }
 
 # ---------------------------------------------------------------------------
@@ -261,6 +265,11 @@ class RawData(BaseModel):
     username: str = ""
 
 
+class Dimensions(BaseModel):
+    cols: int
+    rows: int
+
+
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
@@ -298,6 +307,22 @@ async def data_html():
     })
 
 
+@app.get("/dimensions")
+async def get_dimensions():
+    """Client polls this to learn the desired terminal size."""
+    return JSONResponse({"cols": state["cols"], "rows": state["rows"]})
+
+
+@app.post("/set_dimensions")
+async def set_dimensions(dim: Dimensions):
+    """Browser posts its computed cols/rows whenever the window is resized."""
+    cols = max(80, min(512, dim.cols))
+    rows = max(24, min(200, dim.rows))
+    state["cols"] = cols
+    state["rows"] = rows
+    return {"status": "ok", "cols": cols, "rows": rows}
+
+
 @app.get("/", response_class=HTMLResponse)
 async def index():
     return HTMLResponse(PAGE_HTML)
@@ -320,6 +345,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
     width: 100%;
     height: 100%;
     background: #000;
+    /* Font is set dynamically by JS to fill the viewport */
     font-family: 'Courier New', 'Lucida Console', 'DejaVu Sans Mono', Consolas, monospace;
     color: #d3d7cf;
     overflow: hidden;
@@ -339,6 +365,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
     color: #888;
     z-index: 10;
     gap: 16px;
+    flex-shrink: 0;
   }
   #statusbar .dot {
     display: inline-block;
@@ -347,47 +374,40 @@ PAGE_HTML = r"""<!DOCTYPE html>
     background: #555;
     transition: background 0.3s;
   }
-  #statusbar .dot.live { background: #4e9a06; }
+  #statusbar .dot.live  { background: #4e9a06; }
   #statusbar .dot.stale { background: #c4a000; animation: blink-stale 1s infinite; }
   #statusbar .dot.dead  { background: #cc0000; }
   @keyframes blink-stale { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-  /* Terminal viewport */
+  #status-dims { margin-left: auto; font-size: 10px; color: #555; }
+
+  /* Terminal viewport — fills the space below the status bar */
   #viewport {
     position: fixed;
     top: 20px; bottom: 0; left: 0; right: 0;
-    overflow: auto;
-    padding: 6px 10px;
+    overflow: hidden;           /* no scrollbar — content is sized to fit exactly */
+    display: flex;
+    align-items: flex-start;
   }
 
-  /* The pre that holds the nvitop output */
+  /* The <pre> that holds nvitop output.
+     font-size / line-height are set by JS each time the window is resized
+     so the content fills the viewport without scrolling. */
   #terminal {
-    font-size: 13px;
-    line-height: 1.18;
     white-space: pre;
     color: #d3d7cf;
-    /* Prevent text selection issues with Unicode box chars */
+    /* JS overwrites font-size and line-height */
+    font-size: 13px;
+    line-height: 1.0;
     -webkit-user-select: text;
     user-select: text;
+    padding: 0 4px;
   }
 
-  /* Placeholder when no data yet */
-  #placeholder {
-    color: #555;
-    margin-top: 40px;
-    font-size: 14px;
-  }
-  #placeholder .spinner {
-    display: inline-block;
-    animation: spin 1.2s linear infinite;
-  }
+  /* Placeholder while waiting for first data */
+  #placeholder { color: #555; font-size: 13px; }
+  #placeholder .spinner { display: inline-block; animation: spin 1.2s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
-
-  /* Scrollbar styling */
-  ::-webkit-scrollbar { width: 6px; height: 6px; }
-  ::-webkit-scrollbar-track { background: #000; }
-  ::-webkit-scrollbar-thumb { background: #333; border-radius: 3px; }
-  ::-webkit-scrollbar-thumb:hover { background: #555; }
 </style>
 </head>
 <body>
@@ -397,6 +417,7 @@ PAGE_HTML = r"""<!DOCTYPE html>
   <span id="status-text">Connecting…</span>
   <span id="status-host"></span>
   <span id="status-time"></span>
+  <span id="status-dims"></span>
 </div>
 
 <div id="viewport">
@@ -411,23 +432,136 @@ Make sure the client is running on the HPC:
 (function () {
   'use strict';
 
-  const terminal   = document.getElementById('terminal');
-  const dot        = document.getElementById('dot');
-  const statusText = document.getElementById('status-text');
-  const statusHost = document.getElementById('status-host');
-  const statusTime = document.getElementById('status-time');
+  const terminal    = document.getElementById('terminal');
+  const viewport    = document.getElementById('viewport');
+  const dot         = document.getElementById('dot');
+  const statusText  = document.getElementById('status-text');
+  const statusHost  = document.getElementById('status-host');
+  const statusTime  = document.getElementById('status-time');
+  const statusDims  = document.getElementById('status-dims');
 
   let lastUpdate = 0;
   let consecutiveErrors = 0;
-  const STALE_MS = 5000;   // yellow after 5 s without update
-  const DEAD_MS  = 15000;  // red after 15 s
+  const STALE_MS = 5000;
+  const DEAD_MS  = 15000;
 
-  // Spinner chars cycle to show we're alive even if data hasn't changed
   const SPINNER = ['◐','◓','◑','◒'];
   let spinIdx = 0;
 
-  function setStatus(state, text) {
-    dot.className = 'dot ' + state;
+  // ── Responsive sizing ───────────────────────────────────────────────────
+  // We measure the monospace character size at a reference font-size, then
+  // compute the font-size that makes exactly `cols` chars fit horizontally
+  // and `rows` lines fit vertically in the viewport.
+
+  // Hidden ruler to measure one character
+  const ruler = document.createElement('pre');
+  ruler.style.cssText = [
+    'position:absolute', 'visibility:hidden', 'pointer-events:none',
+    'top:-9999px', 'left:-9999px', 'margin:0', 'padding:0',
+    'white-space:pre', 'font-family:inherit',
+  ].join(';');
+  ruler.textContent = 'M';
+  document.body.appendChild(ruler);
+
+  let pendingResize = null;
+  let lastSentCols = 0, lastSentRows = 0;
+
+  function measureCharAt(fontSize, lineHeight) {
+    ruler.style.fontSize   = fontSize + 'px';
+    ruler.style.lineHeight = lineHeight;
+    const r = ruler.getBoundingClientRect();
+    return { w: r.width, h: r.height };
+  }
+
+  function applySize(cols, rows) {
+    // Viewport area available for the terminal
+    const vw = window.innerWidth;
+    const vh = window.innerHeight - 20;   // minus status bar
+
+    // Binary-search the font-size that fits `cols` chars in `vw` pixels.
+    // We target line-height = 1.0 so rows fit in vh as well.
+    let lo = 6, hi = 32, fs = 13;
+    for (let i = 0; i < 12; i++) {
+      const mid = (lo + hi) / 2;
+      const { w, h } = measureCharAt(mid, '1.0');
+      const fitCols = Math.floor(vw / w);
+      const fitRows = Math.floor(vh / h);
+      if (fitCols >= cols && fitRows >= rows) {
+        lo = mid;
+        fs = mid;
+      } else {
+        hi = mid;
+      }
+    }
+
+    terminal.style.fontSize   = fs.toFixed(2) + 'px';
+    terminal.style.lineHeight = '1.0';
+
+    // Report actual terminal dimensions that fit at this font size
+    const { w, h } = measureCharAt(fs, '1.0');
+    const actualCols = Math.floor(vw / w);
+    const actualRows = Math.floor(vh / h);
+    statusDims.textContent = actualCols + '×' + actualRows;
+    return { cols: actualCols, rows: actualRows };
+  }
+
+  function sendDimensions(cols, rows) {
+    if (cols === lastSentCols && rows === lastSentRows) return;
+    lastSentCols = cols;
+    lastSentRows = rows;
+    fetch('/set_dimensions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cols, rows }),
+    }).catch(() => {});
+  }
+
+  function onResize() {
+    // Debounce: wait 200 ms after the last resize event before acting
+    clearTimeout(pendingResize);
+    pendingResize = setTimeout(() => {
+      // Ask server what cols/rows it's currently using
+      fetch('/dimensions', { cache: 'no-store' })
+        .then(r => r.json())
+        .then(d => {
+          const { cols, rows } = applySize(d.cols, d.rows);
+          sendDimensions(cols, rows);
+        })
+        .catch(() => {
+          // Fallback: compute cols/rows ourselves from viewport
+          const vw = window.innerWidth;
+          const vh = window.innerHeight - 20;
+          const { w, h } = measureCharAt(13, '1.0');
+          const cols = Math.floor(vw / w);
+          const rows = Math.floor(vh / h);
+          applySize(cols, rows);
+          sendDimensions(cols, rows);
+        });
+    }, 200);
+  }
+
+  window.addEventListener('resize', onResize);
+
+  // Initial sizing: fetch current server dims and fit to window
+  function initialSize() {
+    fetch('/dimensions', { cache: 'no-store' })
+      .then(r => r.json())
+      .then(d => {
+        const { cols, rows } = applySize(d.cols, d.rows);
+        sendDimensions(cols, rows);
+      })
+      .catch(() => {
+        const vw = window.innerWidth;
+        const vh = window.innerHeight - 20;
+        const { w, h } = measureCharAt(13, '1.0');
+        sendDimensions(Math.floor(vw / w), Math.floor(vh / h));
+      });
+  }
+  initialSize();
+
+  // ── Data polling ──────────────────────────────────────────────────────────
+  function setStatus(cls, text) {
+    dot.className = 'dot ' + cls;
     statusText.textContent = text;
   }
 
@@ -439,19 +573,14 @@ Make sure the client is running on the HPC:
       consecutiveErrors = 0;
 
       if (data.html && data.html.trim()) {
-        // Got real data — render it
         terminal.innerHTML = data.html;
         lastUpdate = Date.now();
-
-        // Update status bar
         statusHost.textContent = data.hostname ? '@ ' + data.hostname : '';
         statusTime.textContent = data.timestamp;
         setStatus('live', 'Live');
       } else {
-        // Server up but no data yet
         const age = Date.now() - lastUpdate;
         if (lastUpdate === 0) {
-          // Still waiting for first data
           spinIdx = (spinIdx + 1) % SPINNER.length;
           terminal.innerHTML =
             '<span style="color:#555"><span>' + SPINNER[spinIdx] + '</span>' +
@@ -467,12 +596,10 @@ Make sure the client is running on the HPC:
       }
     } catch (e) {
       consecutiveErrors++;
-      const state = consecutiveErrors > 5 ? 'dead' : 'stale';
-      setStatus(state, 'Error: ' + e.message);
+      setStatus(consecutiveErrors > 5 ? 'dead' : 'stale', 'Error: ' + e.message);
     }
   }
 
-  // Poll every 1 second
   fetchData();
   setInterval(fetchData, 1000);
 })();
