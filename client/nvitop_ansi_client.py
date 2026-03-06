@@ -26,7 +26,7 @@ import socket
 from datetime import datetime
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-SERVER_URL = "http://43.136.42.69:8000"
+SERVER_URL = "http://43.136.42.69:8765"
 UPDATE_INTERVAL = 1.0   # seconds between each nvitop capture
 NVITOP_TIMEOUT = 8      # seconds to wait for nvitop -1 to finish
 
