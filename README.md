@@ -21,7 +21,7 @@
                                          │  (raw ANSI text, 1 s)
                                          ▼
  ┌─────────────────────────────────────────────────────────────┐
- │  Cloud Server  (public IP, port 8000)                       │
+ │  Cloud Server  (public IP, port 8765, proxied via nginx)    │
  │                                                             │
  │   server/app_nvitop_final.py   (FastAPI + uvicorn)          │
  │   ┌─────────────────────────────────────────────┐           │
@@ -70,7 +70,7 @@ hpc-gpu-monitor/
 
 | Where | Requirement |
 |-------|-------------|
-| Cloud server | Python 3.8+, port 8000 open in firewall/security group |
+| Cloud server | Python 3.8+, port 8765 open in firewall/security group, nginx + HTTPS |
 | HPC | `nvitop` installed (`pip install --user nvitop`), Python 3.8+ |
 | SSH | `~/.ssh/config` with aliases for both hosts (see below) |
 
@@ -105,7 +105,7 @@ pm2 start ~/hpc-gpu-monitor/server/app_nvitop_final.py \
 Verify:
 
 ```bash
-curl http://<cloud-server-ip>:8000/
+curl https://nvitop.jaison.ink/
 # should return HTML with lang="en"
 ```
 
@@ -123,10 +123,10 @@ ssh jump-H20-8Card
 pip install --user -r ~/hpc-gpu-monitor/client/requirements.txt
 ```
 
-Edit `SERVER_URL` at the top of `nvitop_ansi_client.py` if needed (default: `http://43.136.42.69:8000`):
+Edit `SERVER_URL` at the top of `nvitop_ansi_client.py` if needed (default: `https://nvitop.jaison.ink`):
 
 ```python
-SERVER_URL = "http://<cloud-server-ip>:8000"
+SERVER_URL = "https://nvitop.jaison.ink"
 ```
 
 Start the client:
@@ -140,7 +140,7 @@ nohup python3 nvitop_ansi_client.py > ansi_client.log 2>&1 &
 
 ### Step 3 — Open the browser
 
-Navigate to `http://<cloud-server-ip>:8000`
+Navigate to `https://nvitop.jaison.ink`
 
 You should see the nvitop UI appear within 2 seconds. The green dot (●) in the top-left indicates a live connection.
 
@@ -162,14 +162,14 @@ You should see the nvitop UI appear within 2 seconds. The green dot (●) in the
 **Page loads but shows spinner / no data**
 - Check client is running: `ssh jump-H20-8Card 'ps aux | grep nvitop_ansi'`
 - Check client log: `ssh jump-H20-8Card 'tail -20 ~/hpc-gpu-monitor/client/ansi_client.log'`
-- Verify HPC can reach server: `curl http://<server-ip>:8000/`
+- Verify HPC can reach server: `curl https://nvitop.jaison.ink/`
 
 **Colors missing / plain text only**
 - Confirm the client log shows `colors=yes`; if not, nvitop may not be in PATH
 - Check `nvitop` is findable: `which nvitop` or `~/.local/bin/nvitop --version`
 
 **Server not starting**
-- Check port 8000 is free: `ss -tlnp | grep 8000`
+- Check port 8765 is free: `ss -tlnp | grep 8765`
 - Check server log: `pm2 logs gpu-monitor-server`
 
 **Stop everything**
@@ -205,7 +205,7 @@ ssh jump-H20-8Card 'pkill -f nvitop_ansi_client.py'
                                           │  （原始 ANSI 文本，每秒 1 次）
                                           ▼
  ┌─────────────────────────────────────────────────────────────┐
- │  云服务器（公网 IP，端口 8000）                               │
+ │  云服务器（公网 IP，端口 8765，nginx + HTTPS 代理）           │
  │                                                             │
  │   server/app_nvitop_final.py   （FastAPI + uvicorn）        │
  │   ┌─────────────────────────────────────────────┐           │
@@ -254,7 +254,7 @@ hpc-gpu-monitor/
 
 | 位置 | 要求 |
 |------|------|
-| 云服务器 | Python 3.8+，安全组放行 8000 端口 |
+| 云服务器 | Python 3.8+，安全组放行 8765 端口，nginx + HTTPS |
 | HPC | 已安装 `nvitop`（`pip install --user nvitop`），Python 3.8+ |
 | SSH | `~/.ssh/config` 中配置好两台主机的别名（见下方） |
 
@@ -289,7 +289,7 @@ pm2 start ~/hpc-gpu-monitor/server/app_nvitop_final.py \
 验证：
 
 ```bash
-curl http://<云服务器IP>:8000/
+curl https://nvitop.jaison.ink/
 # 返回 HTML 且包含 lang="en" 即为成功
 ```
 
@@ -307,10 +307,10 @@ ssh jump-H20-8Card
 pip install --user -r ~/hpc-gpu-monitor/client/requirements.txt
 ```
 
-如有需要，修改 `nvitop_ansi_client.py` 顶部的 `SERVER_URL`（默认 `http://43.136.42.69:8000`）：
+如有需要，修改 `nvitop_ansi_client.py` 顶部的 `SERVER_URL`（默认 `https://nvitop.jaison.ink`）：
 
 ```python
-SERVER_URL = "http://<云服务器IP>:8000"
+SERVER_URL = "https://nvitop.jaison.ink"
 ```
 
 启动客户端：
@@ -324,7 +324,7 @@ nohup python3 nvitop_ansi_client.py > ansi_client.log 2>&1 &
 
 ### 第三步 — 打开浏览器
 
-访问 `http://<云服务器IP>:8000`
+访问 `https://nvitop.jaison.ink`
 
 约 2 秒后出现 nvitop 界面，左上角绿色指示灯（●）表示数据实时传输中。
 
@@ -346,14 +346,14 @@ nohup python3 nvitop_ansi_client.py > ansi_client.log 2>&1 &
 **页面转圈、无数据**
 - 检查客户端是否在运行：`ssh jump-H20-8Card 'ps aux | grep nvitop_ansi'`
 - 查看客户端日志：`ssh jump-H20-8Card 'tail -20 ~/hpc-gpu-monitor/client/ansi_client.log'`
-- 在 HPC 上测试能否访问服务器：`curl http://<服务器IP>:8000/`
+- 在 HPC 上测试能否访问服务器：`curl https://nvitop.jaison.ink/`
 
 **显示纯文本、无颜色**
 - 确认客户端日志显示 `colors=yes`，否则 nvitop 可能不在 PATH 中
 - 检查 nvitop 路径：`which nvitop` 或 `~/.local/bin/nvitop --version`
 
 **服务端无法启动**
-- 检查 8000 端口是否被占用：`ss -tlnp | grep 8000`
+- 检查 8765 端口是否被占用：`ss -tlnp | grep 8765`
 - 查看 pm2 日志：`pm2 logs gpu-monitor-server`
 
 **停止服务**
